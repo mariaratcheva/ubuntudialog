@@ -1,0 +1,125 @@
+
+# ############################################################################
+# Model: E2E Dialogue model - Baseline - RNN-based
+# Encoder: GRU 2 layers
+# Decoder: GRU + Bahdanau's attention + beamsearch
+# Tokens: Characters - CTCTextEncoder
+# Loss: NLL
+##############################################################################
+#vocabulary
+input_encoder_path: ./pretrained_Dialogue/input_encoder.txt
+output_encoder_path: ./pretrained_Dialogue/output_encoder.txt
+
+# Model parameters
+voc_size: 120 
+blank_index: 0 
+bos_index: 1
+eos_index: 2
+unk_index: 0
+
+# Encoder Parameters
+enc_hidden_size: 128
+enc_num_layers: 2
+
+# Decoder Parameters
+dec_hidden_size: 128
+dec_num_layers: 1   
+attn_dim: 128
+dropout: 0.5
+min_decode_ratio: 0.0
+max_decode_ratio: 10.0
+beam_size: 16
+eos_threshold: 1.5
+temperature: 1.25
+
+# Encoder
+encoder: !new:speechbrain.nnet.RNN.GRU
+    input_size: !ref <enc_hidden_size>
+    hidden_size: !ref <enc_hidden_size>
+    num_layers: !ref <enc_num_layers>
+    dropout: !ref <dropout>
+    re_init: True
+
+# Encoder embeddings
+encoder_emb: !new:torch.nn.Embedding
+    num_embeddings: !ref <voc_size>
+    embedding_dim: !ref <enc_hidden_size>
+    padding_idx: !ref <blank_index>
+    
+# Attention-based RNN decoder.
+decoder: !new:speechbrain.nnet.RNN.AttentionalRNNDecoder
+    enc_dim: !ref <enc_hidden_size>
+    input_size: !ref <dec_hidden_size>
+    rnn_type: gru
+    attn_type: content
+    hidden_size: !ref <dec_hidden_size>
+    attn_dim: !ref <attn_dim>
+    num_layers: !ref <dec_num_layers>
+    dropout: !ref <dropout>
+
+# Decoder embeddings
+decoder_emb: !new:torch.nn.Embedding
+    num_embeddings: !ref <voc_size>
+    embedding_dim: !ref <dec_hidden_size>
+    padding_idx: !ref <blank_index>
+
+# Linear transformation on the top of the decoder.
+seq_lin: !new:speechbrain.nnet.linear.Linear
+    input_size: !ref <dec_hidden_size>
+    n_neurons: !ref <voc_size>
+
+# Final softmax (for log posteriors computation).
+log_softmax: !new:speechbrain.nnet.activations.Softmax
+    apply_log: True
+
+# nll loss
+seq_cost: !name:speechbrain.nnet.losses.nll_loss
+    label_smoothing: 0.1
+
+# models
+modules:
+    encoder: !ref <encoder>
+    encoder_emb: !ref <encoder_emb>
+    decoder: !ref <decoder>
+    decoder_emb: !ref <decoder_emb>
+    seq_lin: !ref <seq_lin>
+
+# Gathering all the submodels in a single model object.
+model: !new:torch.nn.ModuleList
+    - [!ref <encoder>, !ref <encoder_emb>, !ref <decoder>,  !ref <seq_lin>, !ref <decoder_emb>]
+
+
+# Beam Searcher at inference time
+beam_searcher: !new:speechbrain.decoders.S2SRNNBeamSearcher
+    embedding: !ref <decoder_emb>
+    decoder: !ref <decoder>
+    linear: !ref <seq_lin>
+    bos_index: !ref <bos_index>
+    eos_index: !ref <eos_index>
+    min_decode_ratio: !ref <min_decode_ratio>
+    max_decode_ratio: !ref <max_decode_ratio>
+    beam_size: !ref <beam_size>
+    eos_threshold: !ref <eos_threshold>
+    temperature: !ref <temperature>
+    using_max_attn_shift: False
+    max_attn_shift: 30
+    coverage_penalty: 0.
+
+# Greedy Searcher - preferred when ressources are limited
+greedy_searcher: !new:speechbrain.decoders.seq2seq.S2SRNNGreedySearcher
+    embedding: !ref <decoder_emb>
+    decoder: !ref <decoder>
+    linear: !ref <seq_lin>
+    bos_index: !ref <bos_index>
+    eos_index: !ref <eos_index>
+    min_decode_ratio: !ref <min_decode_ratio>
+    max_decode_ratio: !ref <max_decode_ratio>
+
+
+# The pretrainer will download the file model.ckpt and it will load
+# the weights into <model> defined before.
+pretrained__dialogue_path: ./pretrained_Dialogue/model.ckpt
+
+pretrainer: !new:speechbrain.utils.parameter_transfer.Pretrainer
+   loadables:
+      model: !ref <model>

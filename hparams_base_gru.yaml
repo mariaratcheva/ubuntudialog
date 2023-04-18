@@ -1,0 +1,203 @@
+
+# ############################################################################
+# Model: E2E Dialogue model - Baseline - RNN-based
+# Encoder: GRU 2 layers
+# Decoder: GRU + Bahdanau's attention + beamsearch
+# Tokens: Characters - CTCTextEncoder
+# losses: NLL
+##############################################################################
+
+# Seed needs to be set at top of yaml, before objects with parameters are instantiated
+seed: 1986
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+
+# Folder set up
+data_folder: !ref ./
+output_folder: !ref ./results/DialogueBaseGRU/<seed>
+wer_file: !ref <output_folder>/wer.txt  
+save_folder: !ref <output_folder>/save
+train_log: !ref <output_folder>/train_log.txt
+bleu_file: !ref <output_folder>/bleu.txt
+
+# data files
+train_json: train.json
+valid_json: valid.json
+test_json: test.json
+
+# The train logger writes training statistics to a file, as well as stdout.
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+    save_file: !ref <train_log>
+
+# Training parameters
+number_of_epochs: 20
+batch_size: 16
+lr: 0.001
+max_grad_norm: 5
+test_batch_size: 4
+sorting: ascending
+# We remove utterances longer than 1000 characters for single-turn dataset
+# and 5000 characters for multi-turn dataset
+avoid_if_longer_than: 5000
+
+# Dataloader options
+train_dataloader_opts:
+    batch_size: !ref <batch_size>
+    num_workers: 6
+
+valid_dataloader_opts:
+    batch_size: !ref <batch_size>
+    num_workers: 6
+
+test_dataloader_opts:
+    batch_size: !ref <test_batch_size>
+    num_workers: 6
+
+# Vocabulary size
+voc_size_history: 120 #input = history
+voc_size_reply: 120  #labels = reply
+
+# Indexes for begin-of-sentence (bos) 
+# and end-of-sentence (eos)
+blank_index: 0 # This special tokes is for padding
+bos_index: 1
+eos_index: 2
+unk_index: 0
+
+# Encoder Parameters
+enc_hidden_size: 128
+enc_num_layers: 2
+
+# Decoder Parameters
+dec_hidden_size: 128
+dec_num_layers: 1   
+attn_dim: 128
+dropout: 0.5
+min_decode_ratio: 0.0
+max_decode_ratio: 10.0
+beam_size: 32
+eos_threshold: 1.5
+temperature: 1.25
+
+# Epoch Counter is saved by the Checkpointer so that training can be resumed
+# if it gets interrupted at any point.
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+    limit: !ref <number_of_epochs>
+
+# Encoder
+encoder: !new:speechbrain.nnet.RNN.GRU
+    input_size: !ref <enc_hidden_size>
+    hidden_size: !ref <enc_hidden_size>
+    num_layers: !ref <enc_num_layers>
+    dropout: !ref <dropout>
+    re_init: True
+
+# Encoder embeddings
+encoder_emb: !new:torch.nn.Embedding
+    num_embeddings: !ref <voc_size_history>
+    embedding_dim: !ref <enc_hidden_size>
+    padding_idx: !ref <blank_index>
+    
+# Attention-based RNN decoder.
+decoder: !new:speechbrain.nnet.RNN.AttentionalRNNDecoder
+    enc_dim: !ref <enc_hidden_size>
+    input_size: !ref <dec_hidden_size>
+    rnn_type: gru
+    attn_type: content
+    hidden_size: !ref <dec_hidden_size>
+    attn_dim: !ref <attn_dim>
+    num_layers: !ref <dec_num_layers>
+    dropout: !ref <dropout>
+
+# Decoder embeddings
+decoder_emb: !new:torch.nn.Embedding
+    num_embeddings: !ref <voc_size_history>
+    embedding_dim: !ref <dec_hidden_size>
+    padding_idx: !ref <blank_index>
+
+# Linear transformation on the top of the decoder.
+seq_lin: !new:speechbrain.nnet.linear.Linear
+    input_size: !ref <dec_hidden_size>
+    n_neurons: !ref <voc_size_reply>
+
+# Final softmax (for log posteriors computation).
+log_softmax: !new:speechbrain.nnet.activations.Softmax
+    apply_log: True
+
+# nll loss
+seq_cost: !name:speechbrain.nnet.losses.nll_loss
+    label_smoothing: 0.1
+
+# Objects in "modules" dict will have their parameters moved to the correct
+# device, as well as having train()/eval() called on them by the Brain class
+modules:
+    encoder: !ref <encoder>
+    encoder_emb: !ref <encoder_emb>
+    decoder: !ref <decoder>
+    decoder_emb: !ref <decoder_emb>
+    seq_lin: !ref <seq_lin>
+
+# Gathering all the submodels in a single model object.
+model: !new:torch.nn.ModuleList
+    - - !ref <encoder>
+      - !ref <encoder_emb>
+      - !ref <decoder>
+      - !ref <seq_lin> 
+      - !ref <decoder_emb>
+
+# Beam Searcher at inference time
+beam_searcher: !new:speechbrain.decoders.S2SRNNBeamSearcher
+    embedding: !ref <decoder_emb>
+    decoder: !ref <decoder>
+    linear: !ref <seq_lin>
+    bos_index: !ref <bos_index>
+    eos_index: !ref <eos_index>
+    min_decode_ratio: !ref <min_decode_ratio>
+    max_decode_ratio: !ref <max_decode_ratio>
+    beam_size: !ref <beam_size>
+    eos_threshold: !ref <eos_threshold>
+    temperature: !ref <temperature>
+    using_max_attn_shift: False
+    max_attn_shift: 30
+    coverage_penalty: 0.
+
+# Greedy Searcher - preferred when ressources are limited
+greedy_searcher: !new:speechbrain.decoders.seq2seq.S2SRNNGreedySearcher
+    embedding: !ref <decoder_emb>
+    decoder: !ref <decoder>
+    linear: !ref <seq_lin>
+    bos_index: !ref <bos_index>
+    eos_index: !ref <eos_index>
+    min_decode_ratio: !ref <min_decode_ratio>
+    max_decode_ratio: !ref <max_decode_ratio>
+
+# Manage learning rate annealing
+lr_annealing: !new:speechbrain.nnet.schedulers.NewBobScheduler
+    initial_value: !ref <lr>
+    improvement_threshold: 0.0025
+    annealing_factor: 0.8
+    patient: 0
+
+# Optimizer to be used by the Brain class 
+opt_class: !name:torch.optim.Adam
+    lr: !ref <lr>
+    
+# Save the state of training 
+# training can be resumed if it gets interrupted 
+# the best checkpoint is later loaded for evaluation or inference.
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <save_folder>
+    recoverables:
+        model: !ref <model>
+        scheduler: !ref <lr_annealing>
+        counter: !ref <epoch_counter>
+
+# performance statistics
+error_rate_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats
+
+cer_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats
+    split_tokens: True
+
+bleu_computer: !name:speechbrain.utils.bleu.BLEUStats
+    merge_words: False
+
+acc_computer: !name:speechbrain.utils.Accuracy.AccuracyStats

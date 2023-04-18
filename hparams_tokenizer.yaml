@@ -1,0 +1,13 @@
+
+output_folder: !PLACEHOLDER
+annotation_read: !PLACEHOLDER
+annotation_file: "train.json"
+vocab_size: 70
+
+tokenizer: !name:speechbrain.tokenizers.SentencePiece.SentencePiece
+   model_dir: !ref <output_folder>
+   vocab_size: !ref <vocab_size>
+   annotation_train: !ref <annotation_file>
+   annotation_read: !ref <annotation_read>
+   annotation_format : "json"
+   model_type: "bpe"

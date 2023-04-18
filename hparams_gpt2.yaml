@@ -1,0 +1,113 @@
+
+# Seed needs to be set at top of yaml, before objects with parameters are made
+seed: 1993
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+
+# Dataset will be downloaded to the `data_original`
+data_folder: ./data
+output_folder: !ref ./results/DialogueGPT2/<seed>
+save_folder: !ref <output_folder>/save
+train_log: !ref <output_folder>/train_log.txt
+wer_file: !ref <output_folder>/wer.txt
+
+
+# URL for the wav2vec2 model, you can change to benchmark diffrenet models
+# Important: we use wav2vec2 base and not the fine-tuned one with ASR task
+# This allow you to have ~4% improvment
+gpt_hub: gpt2
+gpt_folder: !ref <save_folder>/gpt_checkpoint
+
+# Path where data manifest files will be stored
+train_annotation: !ref <data_folder>/train.json
+valid_annotation: !ref <data_folder>/valid.json
+test_annotation: !ref <data_folder>/test.json
+
+# The train logger writes training statistics to a file, as well as stdout.
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+    save_file: !ref <train_log>
+
+# Special tokens
+bos_token: "BOS"
+eos_token: "EOS"
+
+system_token: "SPK_1"
+user_token: "SPK_2"
+
+additional_special_tokens : [
+    !ref <system_token>,
+    !ref <user_token>
+]
+
+special_tokens: [
+    !ref <bos_token>,
+    !ref <eos_token>,
+    !ref <system_token>,
+    !ref <user_token>
+]
+
+attr_to_special_tokens:
+    "bos_token": !ref <bos_token>
+    "eos_token": !ref <eos_token>
+    "additional_special_tokens": !ref <additional_special_tokens>
+
+# training parameters
+number_of_epochs: 10
+batch_size: 8
+lr: 1.97125e-4
+max_history: 2
+with_eos: True
+
+# freeze GPT model 
+freeze_gptmodel: False
+
+
+dataloader_options:
+    batch_size: !ref <batch_size>
+    shuffle: True
+    num_workers: 2  # 2 on linux but 0 works on windows
+    drop_last: False
+
+# gpt model
+gpt_model: !new:huggingface_GPT.HuggingFaceGPT
+    source: !ref <gpt_hub>
+    freeze: !ref <freeze_gptmodel>
+    save_path: !ref <gpt_folder>
+
+
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+    limit: !ref <number_of_epochs>
+
+modules:
+    gpt_model: !ref <gpt_model>
+
+model: !new:torch.nn.ModuleList
+    - [!ref <gpt_model>]
+
+log_softmax: !new:speechbrain.nnet.activations.Softmax
+    apply_log: True
+
+compute_cost: !name:speechbrain.nnet.losses.nll_loss
+
+
+opt_class: !name:torch.optim.AdamW
+    lr: !ref <lr>
+
+
+lr_annealing: !new:speechbrain.nnet.schedulers.NewBobScheduler
+    initial_value: !ref <lr>
+    improvement_threshold: 0.0025
+    annealing_factor: 0.9
+    patient: 0
+
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <save_folder>
+    recoverables:
+        gpt_model: !ref <gpt_model>
+        lr_annealing_output: !ref <lr_annealing>
+        counter: !ref <epoch_counter>
+
+# performance statistics
+error_rate_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats 
+
+cer_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats 
+    split_tokens: True 

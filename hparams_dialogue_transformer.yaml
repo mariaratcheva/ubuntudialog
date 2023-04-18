@@ -1,0 +1,177 @@
+# ############################################################################
+# Model: E2E Dialogue model - Transformer-based
+# Encoder: Transformer
+# Decoder: Transformer + greedy search
+# Tokens: Characters + CTCTextEncoder
+# losses: NLL
+##############################################################################
+
+# Seed needs to be set at top of yaml, before objects with parameters are instantiated
+seed: 1986
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+
+# folder set up
+data_folder: !ref ./
+output_folder: !ref ./results/DialogueTransformer/<seed>
+wer_file: !ref <output_folder>/wer.txt
+save_folder: !ref <output_folder>/save
+train_log: !ref <output_folder>/train_log.txt
+bleu_file: !ref <output_folder>/bleu.txt
+
+# data files
+train_annotation: !ref train.json
+valid_annotation: !ref valid.json
+test_annotation: !ref test.json
+
+# the train logger writes training statistics to a file, as well as stdout.
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+    save_file: !ref <train_log>
+
+# training parameters
+number_of_epochs: 10
+batch_size: 16
+lr: 0.001
+lr_final: 0.0001
+test_batch_size: 4
+sorting: ascending
+# We remove utterance slonger than 1000 characters for single-turn dataset
+avoid_if_longer_than: 5000
+
+
+# dataloader options
+train_dataloader_opts:
+    batch_size: !ref <batch_size>
+    num_workers: 6
+
+valid_dataloader_opts:
+    batch_size: !ref <batch_size>
+    num_workers: 6
+
+test_dataloader_opts:
+    batch_size: !ref <test_batch_size>
+    num_workers: 6
+
+# vocabulary size
+voc_size_context: 70  #input = history
+voc_size_reply: 70    #labels = reply
+
+# indexes for begin-of-sentence (bos) 
+# and end-of-sentence (eos)
+blank_index: 0 # special token is for padding
+bos_index: 1
+eos_index: 2
+unk_index: 0
+
+# Transformer paarameters
+d_model: 64
+nhead: 4
+num_encoder_layers: 12
+dim_feedforward: 64
+dropout: 0.1
+num_decoder_layers: 3
+min_decode_ratio: 0.0
+max_decode_ratio: 10.0
+beam_size: 3
+eos_threshold: 1.5
+temperature: 1.25
+
+# epoch counter 
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+    limit: !ref <number_of_epochs>
+
+# Transformer model 
+Seq2SeqTransformer: !new:torch.nn.Transformer
+    d_model: !ref <d_model>
+    nhead: !ref <nhead>
+    num_encoder_layers: !ref <num_encoder_layers>
+    num_decoder_layers: !ref <num_decoder_layers>
+    dim_feedforward: !ref <dim_feedforward>
+    dropout: !ref <dropout>
+    batch_first: True
+    
+# encoder embeddings
+encoder_emb: !new:torch.nn.Embedding
+    num_embeddings: !ref <voc_size_context>
+    embedding_dim: !ref <d_model>
+    padding_idx: !ref <blank_index>
+    
+# positional embeddings
+pos_emb_enc: !new:speechbrain.lobes.models.transformer.Transformer.PositionalEncoding
+    input_size: !ref <d_model>
+    max_len: 5000
+
+pos_emb_dec: !new:speechbrain.lobes.models.transformer.Transformer.PositionalEncoding
+    input_size: !ref <d_model>
+    max_len: 5000
+
+# decoder embeddings           
+decoder_emb: !new:torch.nn.Embedding
+    num_embeddings: !ref <voc_size_reply>
+    embedding_dim: !ref <d_model>
+    padding_idx: !ref <blank_index>
+
+# linear transformation on the top of the decoder.
+seq_lin: !new:speechbrain.nnet.linear.Linear
+    input_size: !ref <d_model>
+    n_neurons: !ref <voc_size_reply>
+
+# masks
+lookahead_mask: !name:speechbrain.lobes.models.transformer.Transformer.get_lookahead_mask
+padding_mask: !name:speechbrain.lobes.models.transformer.Transformer.get_key_padding_mask
+
+# final softmax (for log posteriors computation).
+log_softmax: !new:speechbrain.nnet.activations.Softmax
+    apply_log: True
+
+# nll loss
+seq_cost: !name:speechbrain.nnet.losses.nll_loss
+    label_smoothing: 0.1
+
+
+# grouping objects in "modules" called in the Brain class
+modules:
+    Seq2SeqTransformer: !ref <Seq2SeqTransformer>
+    encoder_emb: !ref <encoder_emb>
+    pos_emb_enc: !ref <pos_emb_enc>
+    decoder_emb: !ref <decoder_emb>
+    pos_emb_dec: !ref <pos_emb_dec>
+    seq_lin: !ref <seq_lin>
+
+
+# gathering all the submodels in a single model object.
+model: !new:torch.nn.ModuleList
+    - - !ref <Seq2SeqTransformer>
+      - !ref <encoder_emb>
+      - !ref <seq_lin> 
+      - !ref <decoder_emb>
+     
+
+# manage learning rate annealing over the epochs.
+lr_annealing: !new:speechbrain.nnet.schedulers.LinearScheduler
+    initial_value: !ref <lr>
+    final_value: !ref <lr_final>
+    epoch_count: !ref <number_of_epochs>
+
+# optimizer - constructed by the Brain class 
+opt_class: !name:torch.optim.Adam
+    lr: !ref <lr>
+   
+# saving the state of training so that 
+# it can be resumed if it gets interrupted
+# the best checkpoint can be loaded for evaluation or inference.
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <save_folder>
+    recoverables:
+        model: !ref <model>
+        counter: !ref <epoch_counter>
+
+# performance statistics
+error_rate_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats 
+
+cer_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats 
+    split_tokens: True 
+
+bleu_computer: !name:speechbrain.utils.bleu.BLEUStats
+    merge_words: True
+
+acc_computer: !name:speechbrain.utils.Accuracy.AccuracyStats
